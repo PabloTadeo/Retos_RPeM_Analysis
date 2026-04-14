@@ -1,0 +1,734 @@
+---
+title: "RPeM Index"
+author: "Pablo Tadeo Ríos-Gallardo, PhD."
+date: "2025-11-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# ==============================================================================
+# PROYECTO: PENSAMIENTO EN MOVIMIENTO (UCR)
+# FASE 1 MAESTRA: IMPORTACIÓN, LIMPIEZA AVANZADA Y CÁLCULO FÍSICO
+# Autor: Pablo Tadeo Ríos-Gallardo
+# ==============================================================================
+
+# 1. Configuración del Entorno
+# ------------------------------------------------------------------------------
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(janitor)) install.packages("janitor")
+if(!require(gt)) install.packages("gt") 
+
+library(tidyverse)
+library(janitor)
+library(gt)
+
+# Crear estructura de carpetas para el output (si no existen)
+if(!dir.exists("Output_Tables")) dir.create("Output_Tables")
+if(!dir.exists("Output_Figures")) dir.create("Output_Figures")
+
+# 2. Cargar Datos Actualizados
+# ------------------------------------------------------------------------------
+file_path <- "/Users/pablotadeo/Desktop/Rmd_Projects/UCR/MyJumpLab_RePM.csv"
+
+raw_data <- read_csv(file_path, show_col_types = FALSE) %>% 
+  clean_names() 
+
+# 3. Selección y Limpieza Inicial
+# ------------------------------------------------------------------------------
+clean_data <- raw_data %>%
+  select(
+    date,
+    team,
+    name,
+    sex,                
+    jump_type,
+    jump_height_cm,
+    push_off_distance_m = push_off_distance_hp0_in_m, 
+    velocity_m_s = velocity_m_s,
+    readiness_colour
+  ) %>%
+  # Asegurar tipos de datos numéricos
+  mutate(
+    jump_height_cm = as.numeric(jump_height_cm),
+    velocity_m_s = as.numeric(velocity_m_s),
+    push_off_distance_m = as.numeric(push_off_distance_m)
+  ) %>%
+  # Filtros básicos de seguridad
+  filter(
+    !is.na(jump_height_cm),
+    jump_height_cm > 0,
+    velocity_m_s > 0
+  )
+
+# 4. Ingeniería de Variables y FILTRADO FISIOLÓGICO (Aquí está la corrección)
+# ------------------------------------------------------------------------------
+processed_data <- clean_data %>%
+  mutate(
+    # Fórmula física: t = d / v (convertido a ms)
+    t_con_ms = (push_off_distance_m / velocity_m_s) * 1000,
+    
+    # Índice RPeM
+    rpem = jump_height_cm / t_con_ms
+  ) %>%
+  # --- FILTROS DE COHERENCIA ---
+  # Esto elimina los Infinitos y tiempos negativos que rompían la tabla
+  filter(
+    t_con_ms > 0,          # El tiempo debe ser positivo
+    t_con_ms < 2000,       # Filtramos tiempos irreales (> 2 seg)
+    is.finite(rpem),       # Eliminamos valores "Inf"
+    push_off_distance_m > 0 # La distancia de empuje debe ser real
+  )
+
+# 5. Selección del MEJOR intento (Best Trial)
+# ------------------------------------------------------------------------------
+# Evitamos pseudoreplicación tomando el mejor salto por atleta/tipo
+best_trials <- processed_data %>%
+  group_by(name, jump_type) %>%
+  slice_max(order_by = jump_height_cm, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Verificación en consola
+cat("STATUS: Datos procesados y limpiados correctamente.\n")
+cat(" - Total atletas válidos:", n_distinct(best_trials$name), "\n")
+cat(" - Desglose por Sexo:\n")
+print(table(best_trials$sex))
+
+# 6. Guardar Dataset Maestro Limpio
+# ------------------------------------------------------------------------------
+write_csv(best_trials, "/Users/pablotadeo/Desktop/Rmd_Projects/UCR/MyJumpLab_RePM_Cleaned.csv")
+```
+
+```{r}
+# ==============================================================================
+# PROYECTO: PENSAMIENTO EN MOVIMIENTO (UCR)
+# FASE 2 FINAL (REFINADO): SALIDAS PROFESIONALES Y FORMATOS MÚLTIPLES
+# ==============================================================================
+
+library(tidyverse)
+library(gt)
+library(ggpubr) 
+
+# 1. Definición de Rutas y Carpetas (En la raíz del proyecto)
+# ------------------------------------------------------------------------------
+base_path <- "/Users/pablotadeo/Desktop/Rmd_Projects/UCR/"
+data_file <- paste0(base_path, "MyJumpLab_RePM_Cleaned.csv")
+
+# Crear carpetas en la ruta exacta del proyecto
+dir.create(paste0(base_path, "Output_Tables"), showWarnings = FALSE)
+dir.create(paste0(base_path, "Output_Figures"), showWarnings = FALSE)
+
+# 2. Cargar Datos
+# ------------------------------------------------------------------------------
+best_trials <- read_csv(data_file, show_col_types = FALSE)
+
+final_data <- best_trials %>%
+  mutate(
+    jump_type = recode(jump_type, "CMJFree" = "CMJ-AS"),
+    # Ordenamos explícitamente los niveles para que el gráfico respete el semáforo
+    readiness_colour = factor(readiness_colour, levels = c("red", "orange", "green"))
+  )
+
+# 3. Configuración Estética (Google Style Refinado)
+# ------------------------------------------------------------------------------
+theme_pem <- theme_pubr(base_size = 11, base_family = "sans") +
+  theme(
+    text = element_text(family = "sans"),
+    plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+    axis.title = element_text(face = "bold", size = 11),
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "#F5F5F5", color = NA),
+    strip.text = element_text(face = "bold", size = 10)
+  )
+
+# Paleta de 12 colores vibrantes para los equipos
+google_cols_extended <- c(
+  "#4285F4", "#DB4437", "#F4B400", "#0F9D58", "#AB47BC", "#00ACC1",
+  "#FF7043", "#9E9D24", "#5C6BC0", "#F06292", "#00796B", "#C2185B"
+)
+
+# 4. TABLA 1: Estadística Descriptiva (Salida HTML para Docs)
+# ------------------------------------------------------------------------------
+table_1 <- final_data %>%
+  group_by(team, sex, jump_type) %>%
+  summarise(
+    N = n_distinct(name),
+    Height = paste0(round(mean(jump_height_cm, na.rm=T), 1), " ± ", round(sd(jump_height_cm, na.rm=T), 1)),
+    TTO = paste0(round(mean(t_con_ms, na.rm=T), 0), " ± ", round(sd(t_con_ms, na.rm=T), 0)),
+    RPeM = paste0(round(mean(rpem, na.rm=T), 2), " ± ", round(sd(rpem, na.rm=T), 2)),
+    .groups = "drop"
+  ) %>%
+  arrange(team, sex)
+
+tabla_apa <- table_1 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Table 1**"),
+    subtitle = "Descriptive Statistics of Neuromuscular Performance by Cohort"
+  ) %>%
+  cols_label(
+    team = "Group", sex = "Sex", jump_type = "Jump Type",
+    Height = "Height (cm)", TTO = "TTO (ms)", RPeM = "RPeM Index"
+  ) %>%
+  tab_options(
+    table.font.names = "Arial",
+    heading.align = "left",
+    table.border.top.color = "black", table.border.top.width = px(2),
+    table.border.bottom.color = "black", table.border.bottom.width = px(2)
+  )
+
+# Guardar en HTML (Fácil copiar-pegar a Docs) y Word
+gtsave(tabla_apa, paste0(base_path, "Output_Tables/Table_1_Descriptives.html"))
+gtsave(tabla_apa, paste0(base_path, "Output_Tables/Table_1_Descriptives.docx"))
+
+# 5. FIGURA 1: Comparación por Deporte (PNG + TIFF)
+# ------------------------------------------------------------------------------
+fig_1 <- ggplot(final_data, aes(x = team, y = rpem, fill = team)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8, width = 0.6, color = "grey40") +
+  # Jitter refinado: color gris oscuro para mejor contraste
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.4, color = "grey30") +
+  facet_wrap(~jump_type, scales = "free_y") +
+  scale_fill_manual(values = google_cols_extended) + 
+  theme_pem +
+  labs(title = "Figure 1. Neuromuscular Efficiency (RPeM) Across Sports", 
+       y = "RPeM-TTO Index (cm/ms)", x = NULL, fill = "Group") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# Guardar en ambos formatos
+ggsave(paste0(base_path, "Output_Figures/Figure_1_Sports.tiff"), plot = fig_1, width = 10, height = 6, dpi = 300)
+ggsave(paste0(base_path, "Output_Figures/Figure_1_Sports.png"), plot = fig_1, width = 10, height = 6, dpi = 300)
+
+# 6. FIGURA 2: RPeM-TTO vs Readiness (Colores Correctos)
+# ------------------------------------------------------------------------------
+# Filtramos NAs para evitar categorías grises
+cor_data <- final_data %>%
+  mutate(readiness_score = case_when(
+    readiness_colour == "red" ~ 1,
+    readiness_colour == "orange" ~ 2,
+    readiness_colour == "green" ~ 3
+  )) %>% filter(!is.na(readiness_score))
+
+fig_2 <- ggplot(cor_data, aes(x = readiness_colour, y = rpem, fill = readiness_colour)) +
+  geom_boxplot(alpha = 0.7, width = 0.5, outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.4, color = "grey30") +
+  stat_cor(aes(x = readiness_score, y = rpem), method = "spearman", 
+           label.x.npc = "center", label.y.npc = "top", size = 3.5) +
+  facet_wrap(~jump_type) +
+  # Mapeo MANUAL ESTRICTO: Red -> Rojo, Orange -> Amarillo/Naranja, Green -> Verde
+  scale_fill_manual(values = c("red" = "#EA4335", "orange" = "#FBBC05", "green" = "#34A853")) + 
+  theme_pem +
+  labs(title = "Figure 2. Association between Subjective Readiness and RPeM",
+       x = "Readiness Status", y = "RPeM Index", fill = "Status")
+
+ggsave(paste0(base_path, "Output_Figures/Figure_2_Readiness.tiff"), plot = fig_2, width = 9, height = 5, dpi = 300)
+ggsave(paste0(base_path, "Output_Figures/Figure_2_Readiness.png"), plot = fig_2, width = 9, height = 5, dpi = 300)
+
+# 7. FIGURA 3: Diferencias por Sexo
+# ------------------------------------------------------------------------------
+fig_3 <- ggplot(final_data, aes(x = sex, y = rpem, fill = sex)) +
+  geom_violin(trim = FALSE, alpha = 0.4, color = NA) +
+  geom_boxplot(width = 0.2, alpha = 0.9, color = "grey30") +
+  geom_jitter(width = 0.1, size = 1, alpha = 0.3, color = "grey30") + # Añadido jitter discreto
+  facet_wrap(~jump_type) +
+  scale_fill_manual(values = c("#E76BF3", "#00BFC4")) +
+  stat_compare_means(method = "t.test", label = "p.signif", vjust = 0.5) +
+  theme_pem +
+  labs(title = "Figure 3. Sex Differences in RPeM Index", x = NULL, y = "RPeM Index")
+
+ggsave(paste0(base_path, "Output_Figures/Figure_3_Sex_Diffs.tiff"), plot = fig_3, width = 8, height = 5, dpi = 300)
+ggsave(paste0(base_path, "Output_Figures/Figure_3_Sex_Diffs.png"), plot = fig_3, width = 8, height = 5, dpi = 300)
+
+print("¡Proceso completado! Revisa la carpeta UCR en tu escritorio.")
+```
+
+```{r}
+# ==============================================================================
+# PROYECTO: PENSAMIENTO EN MOVIMIENTO (UCR)
+# FASE 3: INFERENCIA ESTADÍSTICA Y MATERIAL SUPLEMENTARIO
+# ==============================================================================
+
+# 1. Cargar librerías estadísticas especializadas
+if(!require(lme4)) install.packages("lme4")
+if(!require(lmerTest)) install.packages("lmerTest") # Para obtener p-values en LMM
+if(!require(MuMIn)) install.packages("MuMIn")       # Para R-squared (Marginal/Conditional)
+if(!require(emmeans)) install.packages("emmeans")   # Para Post-hoc
+if(!require(performance)) install.packages("performance") # Para chequeo de supuestos
+
+library(lme4)
+library(lmerTest)
+library(MuMIn)
+library(emmeans)
+library(performance)
+library(tidyverse)
+
+# Cargar datos si no están en memoria
+# best_trials <- read_csv("/Users/pablotadeo/Desktop/Rmd_Projects/UCR/MyJumpLab_RePM_Cleaned.csv")
+
+# Asegurar que las variables categóricas sean factores
+stats_data <- best_trials %>%
+  mutate(
+    team = as.factor(team),
+    sex = as.factor(sex),
+    jump_type = as.factor(jump_type),
+    name = as.factor(name) # Random effect
+  )
+
+# ------------------------------------------------------------------------------
+# A. AJUSTE DEL MODELO LINEAL MIXTO (LMM)
+# ------------------------------------------------------------------------------
+# Modelo: RPeM depende de Deporte, Sexo y Tipo de Salto.
+# Efecto aleatorio: (1|name) para medidas repetidas del mismo atleta.
+model_lmm <- lmer(rpem ~ team + sex + jump_type + (1|name), data = stats_data)
+
+# 1. Tabla ANOVA (Valores F y P para el texto)
+cat("\n=== RESULTADOS DEL ANOVA (Efectos Fijos) ===\n")
+anova_results <- anova(model_lmm)
+print(anova_results)
+
+# 2. R-cuadrada (Tamaño del efecto)
+# R2m = Marginal (fijos), R2c = Condicional (fijos + aleatorios)
+cat("\n=== TAMAÑO DEL EFECTO (R-Squared) ===\n")
+r2_results <- r.squaredGLMM(model_lmm)
+print(r2_results)
+
+# ------------------------------------------------------------------------------
+# B. CORRELACIÓN DE SPEARMAN (READINESS)
+# ------------------------------------------------------------------------------
+# Convertir color a numérico
+cor_data <- stats_data %>%
+  mutate(score = case_when(readiness_colour == "green" ~ 3,
+                           readiness_colour == "orange" ~ 2,
+                           readiness_colour == "red" ~ 1)) %>%
+  filter(!is.na(score))
+
+cat("\n=== CORRELACIÓN SPEARMAN (Global) ===\n")
+spearman_res <- cor.test(cor_data$score, cor_data$rpem, method = "spearman")
+print(spearman_res)
+
+# ------------------------------------------------------------------------------
+# C. GENERACIÓN DE MATERIAL SUPLEMENTARIO (Supplemental Material)
+# ------------------------------------------------------------------------------
+# Generamos un gráfico de diagnóstico de calidad profesional (Q-Q Plot y Residuales)
+
+png("Output_Figures/Supplemental_Figure_S1_Normality_Check.png", 
+    width = 10, height = 6, units = "in", res = 300)
+
+# Usamos el paquete 'performance' para un dashboard de chequeo automático
+check_model(model_lmm, check = c("normality", "homogeneity")) 
+
+dev.off()
+
+cat("\n¡LISTO! Revisa la consola para ver los números F y P que debes escribir en los Resultados.\n")
+cat("La Figura S1 (Normality Check) se guardó en la carpeta Output_Figures.\n")
+```
+
+```{r}
+# ==============================================================================
+# PROYECTO: PENSAMIENTO EN MOVIMIENTO (UCR)
+# FASE 2.1: TABLA 1 DE ALTO IMPACTO (Estilo APA Avanzado)
+# ==============================================================================
+
+library(tidyverse)
+library(gt)
+
+# 1. Cargar y Preparar Datos (Si no están cargados)
+# ------------------------------------------------------------------------------
+# best_trials <- read_csv("/Users/pablotadeo/Desktop/Rmd_Projects/UCR/MyJumpLab_RePM_Cleaned.csv")
+
+# Función personalizada para formatear "Media ± DE" limpiamente
+# Si N=1, solo muestra la media. Si N>1, muestra Media ± DE.
+format_mean_sd <- function(x) {
+  m <- mean(x, na.rm = TRUE)
+  s <- sd(x, na.rm = TRUE)
+  n <- sum(!is.na(x))
+  
+  if (n == 1 || is.na(s)) {
+    return(sprintf("%.2f", m)) # Solo el valor
+  } else {
+    return(paste0(sprintf("%.2f", m), " ± ", sprintf("%.2f", s)))
+  }
+}
+
+# 2. Agrupación y Resumen de Datos
+# ------------------------------------------------------------------------------
+table_data_refined <- best_trials %>%
+  mutate(
+    jump_type = recode(jump_type, "CMJFree" = "CMJ-AS"),
+    # Limpiamos nombres de grupos para que se vean elegantes
+    team = str_to_title(team), 
+    sex = recode(sex, "Female" = "F", "Male" = "M") # Abreviamos para ahorrar espacio
+  ) %>%
+  group_by(team, sex, jump_type) %>%
+  summarise(
+    N = n(),
+    # Aplicamos nuestra función inteligente de formato
+    Height_Val = format_mean_sd(jump_height_cm),
+    TTO_Val = format_mean_sd(t_con_ms),
+    RPeM_Val = format_mean_sd(rpem),
+    .groups = "drop"
+  ) %>%
+  arrange(team, sex, jump_type)
+
+# 3. Creación de la Tabla GT (Estilo APA Profesional)
+# ------------------------------------------------------------------------------
+tabla_pro <- table_data_refined %>%
+  gt(groupname_col = "team") %>% # <--- ESTO AGRUPA VISUALMENTE POR DEPORTE
+  
+  # Encabezado y Título
+  tab_header(
+    title = md("**Table 1**"),
+    subtitle = "Descriptive Statistics of Neuromuscular Performance Stratified by Sport, Sex, and Jump Modality"
+  ) %>%
+  
+  # Etiquetas de Columnas Claras
+  cols_label(
+    sex = "Sex",
+    jump_type = "Jump Type",
+    N = "N",
+    Height_Val = "Height (cm)",
+    TTO_Val = "Time to Takeoff (ms)",
+    RPeM_Val = "RPeM Index"
+  ) %>%
+  
+  # Alineación
+  cols_align(align = "center", columns = c(sex, N, Height_Val, TTO_Val, RPeM_Val)) %>%
+  cols_align(align = "left", columns = jump_type) %>%
+  
+  # Estilo APA (Líneas y Fuentes)
+  tab_options(
+    table.font.names = "Arial",
+    table.font.size = 11,
+    row_group.font.weight = "bold", # Nombres de deportes en negrita
+    row_group.background.color = "#F0F0F0", # Fondo gris muy suave para separar deportes
+    heading.align = "left",
+    table.border.top.color = "black", 
+    table.border.top.width = px(2),
+    table.border.bottom.color = "black", 
+    table.border.bottom.width = px(2),
+    column_labels.border.bottom.color = "black", 
+    column_labels.border.bottom.width = px(2),
+    column_labels.font.weight = "bold"
+  ) %>%
+  
+  # Nota al pie explicativa
+  tab_source_note(
+    source_note = md("*Note.* Data are presented as Mean ± Standard Deviation. F = Female; M = Male; SJ = Squat Jump; CMJ = Countermovement Jump; CMJ-AS = CMJ with Arm Swing. Single-subject cohorts report only the mean value.")
+  )
+
+# 4. Guardar
+# ------------------------------------------------------------------------------
+# Guardar en HTML (Mejor para copiar y pegar a Google Docs sin romper formato)
+gtsave(tabla_pro, "/Users/pablotadeo/Desktop/Rmd_Projects/UCR/Output_Tables/Table_1_Professional.html")
+
+# Guardar en Word (Opcional)
+gtsave(tabla_pro, "/Users/pablotadeo/Desktop/Rmd_Projects/UCR/Output_Tables/Table_1_Professional.docx")
+
+# Mostrar en RStudio
+print(tabla_pro)
+```
+
+```{r}
+# ==============================================================================
+# PROYECTO RETOS – SALIDAS EDITORIAL-FRIENDLY
+# ==============================================================================
+
+library(tidyverse)
+library(gt)
+library(ggpubr)
+
+# 1. Definición de Rutas
+# ------------------------------------------------------------------------------
+base_path <- "/Users/pablotadeo/Desktop/Rmd_Projects/UCR/"
+data_file <- paste0(base_path, "MyJumpLab_RePM_Cleaned.csv")
+
+dir.create(paste0(base_path, "Output_Tables"), showWarnings = FALSE)
+dir.create(paste0(base_path, "Output_Figures"), showWarnings = FALSE)
+
+# 2. Cargar Datos
+# ------------------------------------------------------------------------------
+best_trials <- read_csv(data_file, show_col_types = FALSE)
+
+final_data <- best_trials %>%
+  mutate(
+    jump_type = case_when(
+      jump_type == "CMJFree" ~ "CMJ-AS",
+      TRUE ~ jump_type
+    ),
+    readiness_colour = factor(readiness_colour, levels = c("red", "orange", "green"))
+  )
+
+# 3. Tema Estético – Sin Títulos (requerido por RETOS)
+# ------------------------------------------------------------------------------
+theme_retos <- theme_pubr(base_size = 11, base_family = "sans") +
+  theme(
+    text = element_text(family = "sans"),
+    plot.title = element_blank(),      # <-- SIN TÍTULO EN FIGURA
+    axis.title = element_text(face = "bold", size = 11),
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "#F5F5F5", color = NA),
+    strip.text = element_text(face = "bold", size = 10)
+  )
+
+google_cols_extended <- c(
+  "#4285F4", "#DB4437", "#F4B400", "#0F9D58", "#AB47BC", "#00ACC1",
+  "#FF7043", "#9E9D24", "#5C6BC0", "#F06292", "#00796B", "#C2185B"
+)
+
+# 4. TABLA 1 – FORMATO EDITORIAL RETOS
+# ------------------------------------------------------------------------------
+table_1 <- final_data %>%
+  group_by(team, sex, jump_type) %>%
+  summarise(
+    N = n_distinct(name),
+    Height = paste0(round(mean(jump_height_cm, na.rm=T), 1), " ± ", round(sd(jump_height_cm, na.rm=T), 1)),
+    TTO = paste0(round(mean(t_con_ms, na.rm=T), 0), " ± ", round(sd(t_con_ms, na.rm=T), 0)),
+    RPeM = paste0(round(mean(rpem, na.rm=T), 2), " ± ", round(sd(rpem, na.rm=T), 2)),
+    .groups = "drop"
+  ) %>%
+  arrange(team, sex)
+
+tabla_retos <- table_1 %>%
+  gt() %>%
+  tab_header(
+    title = md("**Table 1. Descriptive Statistics of Neuromuscular Performance**")
+  ) %>%
+  cols_label(
+    team = "Group",
+    sex = "Sex",
+    jump_type = "Jump Type",
+    Height = "Height (cm)",
+    TTO = "Time to Takeoff (ms)",
+    RPeM = "RPeM Index"
+  ) %>%
+  tab_options(
+    table.font.names = "Times New Roman",
+    heading.align = "left",
+    table.border.top.color = "black",
+    table.border.bottom.color = "black",
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2)
+  )
+
+gtsave(tabla_retos, paste0(base_path, "Output_Tables/Table_1_Retos.html"))
+gtsave(tabla_retos, paste0(base_path, "Output_Tables/Table_1_Retos.docx"))
+
+# 5. FIGURA 1 – SIN TÍTULO
+# ------------------------------------------------------------------------------
+fig_1 <- ggplot(final_data, aes(x = team, y = rpem, fill = team)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8, width = 0.6, color = "grey40") +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.4, color = "grey30") +
+  facet_wrap(~jump_type, scales = "free_y") +
+  scale_fill_manual(values = google_cols_extended) +
+  theme_retos +
+  labs(x = NULL, y = "RPeM-TTO Index (cm/ms)", fill = "Group") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+ggsave(paste0(base_path, "Output_Figures/Figure_1_Sports.tiff"),
+       plot = fig_1, width = 10, height = 6, dpi = 300)
+ggsave(paste0(base_path, "Output_Figures/Figure_1_Sports.png"),
+       plot = fig_1, width = 10, height = 6, dpi = 300)
+
+# 6. FIGURA 2 – SIN TÍTULO
+# ------------------------------------------------------------------------------
+cor_data <- final_data %>%
+  mutate(readiness_score = case_when(
+    readiness_colour == "red" ~ 1,
+    readiness_colour == "orange" ~ 2,
+    readiness_colour == "green" ~ 3
+  )) %>%
+  filter(!is.na(readiness_score))
+
+fig_2 <- ggplot(cor_data, aes(x = readiness_colour, y = rpem, fill = readiness_colour)) +
+  geom_boxplot(alpha = 0.7, width = 0.5, outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.4, color = "grey30") +
+  stat_cor(aes(x = readiness_score, y = rpem), method = "spearman",
+           label.x.npc = "center", label.y.npc = "top", size = 3.5) +
+  facet_wrap(~jump_type) +
+  scale_fill_manual(values = c("red" = "#EA4335", "orange" = "#FBBC05", "green" = "#34A853")) +
+  theme_retos +
+  labs(x = "Readiness Status", y = "RPeM Index", fill = "Status")
+
+ggsave(paste0(base_path, "Output_Figures/Figure_2_Readiness.tiff"),
+       plot = fig_2, width = 9, height = 5, dpi = 300)
+ggsave(paste0(base_path, "Output_Figures/Figure_2_Readiness.png"),
+       plot = fig_2, width = 9, height = 5, dpi = 300)
+
+# 7. FIGURA 3 – SIN TÍTULO
+# ------------------------------------------------------------------------------
+fig_3 <- ggplot(final_data, aes(x = sex, y = rpem, fill = sex)) +
+  geom_violin(trim = FALSE, alpha = 0.4, color = NA) +
+  geom_boxplot(width = 0.2, alpha = 0.9, color = "grey30") +
+  geom_jitter(width = 0.1, size = 1, alpha = 0.3, color = "grey30") +
+  facet_wrap(~jump_type) +
+  scale_fill_manual(values = c("#E76BF3", "#00BFC4")) +
+  stat_compare_means(method = "t.test", label = "p.signif", vjust = 0.5) +
+  theme_retos +
+  labs(x = NULL, y = "RPeM Index")
+
+ggsave(paste0(base_path, "Output_Figures/Figure_3_Sex_Diffs.tiff"),
+       plot = fig_3, width = 8, height = 5, dpi = 300)
+ggsave(paste0(base_path, "Output_Figures/Figure_3_Sex_Diffs.png"),
+       plot = fig_3, width = 8, height = 5, dpi = 300)
+
+print("¡Proceso completado sin errores! Figuras sin títulos y tabla lista para RETOS.")
+```
+
+```{r}
+# ==============================================================================
+# PROYECTO RETOS - SALIDAS EN FORMATO EDITORIAL
+# ==============================================================================
+
+library(tidyverse)
+library(gt)
+library(ggpubr)
+
+# 1. Rutas
+base_path <- "/Users/pablotadeo/Desktop/Rmd_Projects/UCR/"
+data_file <- paste0(base_path, "MyJumpLab_RePM_Cleaned.csv")
+
+dir.create(paste0(base_path, "Output_Tables"), showWarnings = FALSE)
+dir.create(paste0(base_path, "Output_Figures"), showWarnings = FALSE)
+
+# 2. Cargar datos
+best_trials <- read_csv(data_file, show_col_types = FALSE)
+
+# ---- CORRECCIÓN DEFINITIVA DEL ERROR DE RECODE ----
+final_data <- best_trials %>%
+  mutate(
+    jump_type = case_when(
+      str_detect(jump_type, regex("CMJFree", ignore_case = TRUE)) ~ "CMJ-AS",
+      TRUE ~ jump_type
+    ),
+    readiness_colour = factor(readiness_colour, levels = c("red", "orange", "green"))
+  )
+
+# 3. Tema gráfico sin títulos (requisito de RETOS)
+theme_retos <- theme_pubr(base_size = 11, base_family = "sans") +
+  theme(
+    text = element_text(family = "sans"),
+    plot.title = element_blank(),     # ← EL TÍTULO SE ELIMINA
+    axis.title = element_text(face = "bold", size = 11),
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "#F5F5F5", color = NA),
+    strip.text = element_text(face = "bold", size = 10)
+  )
+
+# Paleta
+google_cols_extended <- c(
+  "#4285F4", "#DB4437", "#F4B400", "#0F9D58", "#AB47BC", "#00ACC1",
+  "#FF7043", "#9E9D24", "#5C6BC0", "#F06292", "#00796B", "#C2185B"
+)
+
+# ==============================================================================
+# 4. TABLA FINAL ESTILO RETOS (FORMATO EDITORIAL PROFESIONAL)
+# ==============================================================================
+
+tabla_raw <- final_data %>%
+  group_by(team, sex, jump_type) %>%
+  summarise(
+    N = n_distinct(name),
+    Height = paste0(round(mean(jump_height_cm, na.rm=TRUE),1), " ± ", round(sd(jump_height_cm, na.rm=TRUE),1)),
+    TTO = paste0(round(mean(t_con_ms, na.rm=TRUE),0), " ± ", round(sd(t_con_ms, na.rm=TRUE),0)),
+    RPeM = paste0(round(mean(rpem, na.rm=TRUE),2), " ± ", round(sd(rpem, na.rm=TRUE),2)),
+    .groups = "drop"
+  ) %>%
+  arrange(team, sex)
+
+tabla_retos <- tabla_raw %>%
+  gt() %>%
+  tab_header(
+    title = md("**Table 1. Descriptive Statistics of Neuromuscular Performance**")
+  ) %>%
+  cols_label(
+    team = "Group",
+    sex = "Sex",
+    jump_type = "Jump Type",
+    Height = "Height (cm)",
+    TTO = "Time to Takeoff (ms)",
+    RPeM = "RPeM Index"
+  ) %>%
+  tab_options(
+    table.font.names = "Cambria",
+    data_row.padding = px(3),
+    table.border.top.width = px(2),
+    table.border.top.color = "black",
+    table.border.bottom.width = px(2),
+    table.border.bottom.color = "black",
+    heading.align = "left"
+  ) %>%
+  tab_style(
+    style = list(cell_text(weight = "bold")),
+    locations = cells_column_labels(everything())
+  )
+
+gtsave(tabla_retos, paste0(base_path, "Output_Tables/Table_1_REDESIGNED_RETES.html"))
+gtsave(tabla_retos, paste0(base_path, "Output_Tables/Table_1_REDESIGNED_RETES.docx"))
+
+# ==============================================================================
+# 5. FIGURA 1 — SIN TÍTULO
+# ==============================================================================
+
+fig_1 <- ggplot(final_data, aes(x = team, y = rpem, fill = team)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8, width = 0.6, color = "grey40") +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.4, color = "grey30") +
+  facet_wrap(~jump_type, scales = "free_y") +
+  scale_fill_manual(values = google_cols_extended) +
+  theme_retos +
+  labs(y = "RPeM-TTO Index (cm/ms)", x = NULL, fill = "Group") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+ggsave(paste0(base_path, "Output_Figures/Figure_1_Sports_NoTitle.tiff"),
+       plot = fig_1, width = 10, height = 6, dpi = 300)
+
+ggsave(paste0(base_path, "Output_Figures/Figure_1_Sports_NoTitle.png"),
+       plot = fig_1, width = 10, height = 6, dpi = 300)
+
+# ==============================================================================
+# 6. FIGURA 2 — SIN TÍTULO
+# ==============================================================================
+
+cor_data <- final_data %>%
+  mutate(readiness_score = case_when(
+    readiness_colour == "red" ~ 1,
+    readiness_colour == "orange" ~ 2,
+    readiness_colour == "green" ~ 3
+  )) %>% filter(!is.na(readiness_score))
+
+fig_2 <- ggplot(cor_data, aes(x = readiness_colour, y = rpem, fill = readiness_colour)) +
+  geom_boxplot(alpha = 0.7, width = 0.5, outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.4, color = "grey30") +
+  stat_cor(aes(x = readiness_score, y = rpem), method = "spearman",
+           label.x.npc = "center", label.y.npc = "top", size = 3.5) +
+  facet_wrap(~jump_type) +
+  scale_fill_manual(values = c("red"="#EA4335", "orange"="#FBBC05", "green"="#34A853")) +
+  theme_retos +
+  labs(x = "Readiness Status", y = "RPeM Index", fill = "Status")
+
+ggsave(paste0(base_path, "Output_Figures/Figure_2_Readiness_NoTitle.tiff"),
+       plot = fig_2, width = 9, height = 5, dpi = 300)
+
+ggsave(paste0(base_path, "Output_Figures/Figure_2_Readiness_NoTitle.png"),
+       plot = fig_2, width = 9, height = 5, dpi = 300)
+
+# ==============================================================================
+# 7. FIGURA 3 — SIN TÍTULO
+# ==============================================================================
+
+fig_3 <- ggplot(final_data, aes(x = sex, y = rpem, fill = sex)) +
+  geom_violin(trim = FALSE, alpha = 0.4, color = NA) +
+  geom_boxplot(width = 0.2, alpha = 0.9, color = "grey30") +
+  geom_jitter(width = 0.1, size = 1, alpha = 0.3, color = "grey30") +
+  facet_wrap(~jump_type) +
+  scale_fill_manual(values = c("#E76BF3", "#00BFC4")) +
+  stat_compare_means(method = "t.test", label = "p.signif", vjust = 0.5) +
+  theme_retos +
+  labs(x = NULL, y = "RPeM Index")
+
+ggsave(paste0(base_path, "Output_Figures/Figure_3_Sex_NoTitle.tiff"),
+       plot = fig_3, width = 8, height = 5, dpi = 300)
+
+ggsave(paste0(base_path, "Output_Figures/Figure_3_Sex_NoTitle.png"),
+       plot = fig_3, width = 8, height = 5, dpi = 300)
+
+print("¡Proceso completado sin errores! Tablas y figuras listas para RETOS.")
+```
+
